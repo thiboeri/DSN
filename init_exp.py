@@ -37,13 +37,13 @@ def get_shared_bias(n, name, offset = 0):
     return val
 
 def load_mnist(path):
-    data = cPickle.load(open('/data/lisa/data/mnist/mnist.pkl', 'r'))
+    data = cPickle.load(open(os.path.join(path,'mnist.pkl'), 'r'))
     return data
 
 def experiment(state, channel):
     print state
     # LOAD DATA
-    (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist('/data/lisa/data/mnist')
+    (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
 
     #train_X = binarize(train_X)
     #valid_X = binarize(valid_X)
@@ -428,7 +428,7 @@ def experiment(state, channel):
     print 'Generating samples...',
     t = time.time()
     #init        =   cast32(numpy.random.uniform(size=(1,784)))
-    init        =   test_X.get_value()[0]
+    init        =   test_X.get_value()[:1]
     zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
     
     samples     =   [[init] + zeros]
@@ -486,13 +486,13 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     args.K          =   2
-    args.N          =   1#2
+    args.N          =   2
     args.n_epoch    =   20
     args.batch_size =   100
 
     args.hidden_add_noise_sigma =   0.1
     args.hidden_dropout         =   0.5
-    args.input_salt_and_pepper  =   0.5
+    args.input_salt_and_pepper  =   0.25
 
     args.learning_rate  =   0.1
     args.momentum       =   0.9
@@ -500,11 +500,13 @@ if __name__ == '__main__':
 
     args.hidden_size    =   1000
 
-    args.input_sampling =   False #True
+    args.input_sampling =   False
     args.noiseless_h1   =   False
 
     args.vis_init       =   False
 
     args.act            =   'rectifier'
+
+    args.data_path      =   '/data/lisa/data/mnist/'
 
     experiment(args, None)
