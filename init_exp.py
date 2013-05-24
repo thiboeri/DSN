@@ -45,6 +45,8 @@ def experiment(state, channel):
     # LOAD DATA
     (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
 
+    train_X = numpy.concatenate((train_X, valid_X))
+
     #train_X = binarize(train_X)
     #valid_X = binarize(valid_X)
     #test_X = binarize(test_X)
