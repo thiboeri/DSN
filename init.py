@@ -428,8 +428,8 @@ def experiment(state, channel):
     print 'Generating samples...',
 
     t = time.time()
-    init        =   cast32(numpy.random.uniform(size=(1,784)))
-    #init        =   test_X.get_value()[:1]
+    #init        =   cast32(numpy.random.uniform(size=(1,784)))
+    init        =   test_X.get_value()[:1]
     zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
     
     samples     =   [[init] + zeros]
@@ -459,6 +459,17 @@ def experiment(state, channel):
         
     
     x_chain =   numpy.vstack(output)
+    #plot
+    img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
+    img_samples.save('img_samples.png')
+    print 'took ', time.time() - t, ' seconds'
+
+
+    
+
+
+    #init        =   numpy.zeros((1,784), dtype='float32')
+
 
     '''
     # chainnnn : f_noise -> f_sample on last sample
@@ -491,11 +502,6 @@ def experiment(state, channel):
     #samples = numpy.vstack(samples)
 
     '''
-    #plot
-    img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
-    img_samples.save('img_samples.png')
-    print 'took ', time.time() - t, ' seconds'
-
     if __name__ == '__main__':
         os.system('eog img_samples.png')
 
