@@ -7,10 +7,11 @@ from collections import OrderedDict
 from image_tiler import *
 import time
 
-cast32 = lambda x : numpy.cast['float32'](x)
-trunc = lambda x : str(x)[:8]
-logit = lambda p : numpy.log(p / (1 - p) )
-binarize = lambda x : cast32(x >= 0.5)
+cast32      = lambda x : numpy.cast['float32'](x)
+trunc       = lambda x : str(x)[:8]
+logit       = lambda p : numpy.log(p / (1 - p) )
+binarize    = lambda x : cast32(x >= 0.5)
+sigmoid     = lambda x : cast32(1. / (1 + numpy.exp(-x)))
 
 def SaltAndPepper(X, rate=0.3):
     # Salt and pepper noise
@@ -77,7 +78,18 @@ def experiment(state, channel):
 
     weights_list    =   [get_shared_weights(layer_sizes[i], layer_sizes[i+1], numpy.sqrt(6. / (layer_sizes[i] + layer_sizes[i+1] )), 'W') for i in range(K)]
     bias_list       =   [get_shared_bias(layer_sizes[i], 'b') for i in range(K + 1)]
-   
+
+
+    # This guy has to be lower diagonal!
+    # Proper init?
+    V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 0.001, 'V')
+    
+    # lower diagonal matrix with 1's under the main diagonal, will be used for masking
+    # Upper diagonal actually, because of parametrisation : X * V -> X_i = 
+    
+    dim = layer_sizes[0]
+    lower_diag_I    =   cast32((numpy.tril(numpy.ones((dim, dim))).T + 1) % 2).T
+    V.set_value(lower_diag_I * V.get_value())
 
         # functions
     def dropout(IN, p = 0.5):
@@ -117,18 +129,22 @@ def experiment(state, channel):
                 simple_update_layer(hiddens, None, i, mul_noise = False, add_noise = False)
 
     # we can append the reconstruction at each step
-    def update_even_layers(hiddens, p_X_chain, noisy):
+    def update_even_layers(hiddens, p_X_chain, autoregression, noisy):
         for i in range(0, K+1, 2):
             print i
             if noisy:
-                simple_update_layer(hiddens, p_X_chain, i)
+                simple_update_layer(hiddens, p_X_chain, i, autoregression)
             else:
-                simple_update_layer(hiddens, p_X_chain, i, mul_noise = False, add_noise = False)
+                simple_update_layer(hiddens, p_X_chain, i, autoregression, mul_noise = False, add_noise = False)
 
-    def simple_update_layer(hiddens, p_X_chain, i, mul_noise = True, add_noise = True):
+    def simple_update_layer(hiddens, p_X_chain, i, autoregression=False, mul_noise=True, add_noise=True):
         # Compute the dot product, whatever layer
         if i == 0:
             hiddens[i]  =   T.dot(hiddens[i+1], weights_list[i].T) + bias_list[i]           
+            
+            if autoregression:
+                print 'First layer auto-regressor'
+                hiddens[i] = hiddens[i] + T.dot(X, V)
 
         elif i == K:
             hiddens[i]  =   T.dot(hiddens[i-1], weights_list[i-1]) + bias_list[i]
@@ -177,12 +193,12 @@ def experiment(state, channel):
             # set input layer
             hiddens[i]  =   sampled
 
-    def update_layers(hiddens, p_X_chain, noisy = True):
+    def update_layers(hiddens, p_X_chain, autoregression, noisy = True):
         print 'odd layer update'
         update_odd_layers(hiddens, noisy)
         print
         print 'even layer update'
-        update_even_layers(hiddens, p_X_chain, noisy)
+        update_even_layers(hiddens, p_X_chain, autoregression, noisy)
 
  
     ''' F PROP '''
@@ -215,7 +231,7 @@ def experiment(state, channel):
     # The layer update scheme
     print "Building the graph :", 2*N*K,"updates"
     for i in range(2 * N * K):
-        update_layers(hiddens, p_X_chain)
+        update_layers(hiddens, p_X_chain, autoregression = state.autoregression)
     
 
     # COST AND GRADIENTS    
@@ -225,30 +241,24 @@ def experiment(state, channel):
     COST        =   [T.mean(T.nnet.binary_crossentropy(rX, X)) for rX in p_X_chain]
     show_COST   =   COST[-1] 
     COST        =   numpy.sum(COST)
-    
-    '''
-    lr              =   theano.shared(cast32(state.learning_rate))
-    momentum        =   theano.shared(cast32(state.momentum))
-
-    gradient        =   T.grad(COST, params)
-    gradient_buffer =   [theano.shared(numpy.zeros(x.get_value().shape, dtype='float32')) for x in params]
-
-    m_gradient      =   [momentum * gb + (cast32(1) - momentum) * g for (gb, g) in zip(gradient_buffer, gradient)]
-
-    g_updates       =   [(p, p - lr * mg) for (p, mg) in zip(params, m_gradient)]
-    b_updates       =   zip(gradient_buffer, m_gradient)
-
-    updates         =   OrderedDict(g_updates + b_updates)
-    ''' 
 
     params          =   weights_list + bias_list
+    if state.autoregression:
+        params      +=  [V]
+
     gradient        =   T.grad(COST, params)
+    if state.autoregression:
+        gradient[-1]=(gradient[-1] * lower_diag_I)
+
     gradient_buffer =   [theano.shared(numpy.zeros(x.get_value().shape, dtype='float32')) for x in params]
     
     m_gradient      =   [momentum * gb + (cast32(1) - momentum) * g for (gb, g) in zip(gradient_buffer, gradient)]
     g_updates       =   [(p, p - learning_rate * mg) for (p, mg) in zip(params, m_gradient)]
     b_updates       =   zip(gradient_buffer, m_gradient)
 
+    updates         =   g_updates + b_updates
+    #if state.autoregression:
+    #    updates     +=  [(V, V * lower_diag_I)]
     updates         =   OrderedDict(g_updates + b_updates)
     
     #updates     =   OrderedDict([(p, p - learning_rate * g) for (p, g) in zip(params, gradient)])
@@ -299,34 +309,22 @@ def experiment(state, channel):
 
     # The layer update scheme
     for i in range(2 * N * K):
-        update_layers(hiddens_R, p_X_chain_R)
+        update_layers(hiddens_R, p_X_chain_R, noisy=False, autoregression=state.autoregression)
 
     f_recon = theano.function(inputs = [X], outputs = p_X_chain_R[-1]) 
-
-
 
     # TRAINING
     n_epoch     =   state.n_epoch
     batch_size  =   state.batch_size
     STOP        =   False
     counter     =   0
-    #def sample_batch(size):
-    #    return numpy.array(R.sample(train_idx, size))
-
 
     train_costs =   []
     valid_costs =   []
     test_costs  =   []
-
-    #if __name__ == "__main__":
-    #bias_list[0].set_value(logit(numpy.clip(0.9,0.001,train_X.mean(axis=0))))
     
     if state.vis_init:
         bias_list[0].set_value(logit(numpy.clip(0.9,0.001,train_X.get_value().mean(axis=0))))
-    #bias_list[0].set_value( cast32( -5 * numpy.ones(bias_list[0].get_value().shape)) )
-
-
-    #import pdb; pdb.set_trace()
 
     while not STOP:
         counter     +=  1
@@ -405,39 +403,62 @@ def experiment(state, channel):
     ''' Here the hiddens are given as input also, to keep the chain going '''     
     hiddens     = [X_corrupt] + hiddens_input
     p_X_chain   = [] 
-
     
-    # The layer update scheme
-    print "Building the graph :", 2*N*K,"updates"
-    for i in range(2 * N * K):
-        update_layers(hiddens, p_X_chain)
+    # ONE update, without autoregression (this will be done in python -> with one update we only have time to produce the next
+    # output layer. So we just get the inverse sigmoid, which gives us Wx + b, and the rest is iteratively constructing the new p_X
+    # using the autoregression weights
+    update_layers(hiddens, p_X_chain, noisy=True, autoregression=False)
     
-
-    # COST AND GRADIENTS    
-    # Is this noisy?
-    ''' unmodified chunk '''
-
-    #f_sample_hiddens    = theano.function(inputs = [X] + hiddens_input, outputs = hiddens, on_unused_input='warn')
-    #f_sample_vis_chain  = theano.function(inputs = [X] + hiddens_input, outputs = p_X_chain, on_unused_input='warn')
+    #for i in range(2 * N * K):
+    #    update_layers(hiddens, p_X_chain)
 
     f_sample    =   theano.function(inputs = [X] + hiddens_input, outputs = p_X_chain+hiddens, on_unused_input='warn')
 
+
+    # call f_sample:
+    # get h1, get p_X_chain[0]
+    # loop to compute x[i]
 
     numpy.random.seed(1)
     
     noise_init  =   numpy.random.uniform
     
     print 'Generating samples...',
+
     t = time.time()
-    #init        =   cast32(numpy.random.uniform(size=(1,784)))
-    init        =   test_X.get_value()[:1]
+    init        =   cast32(numpy.random.uniform(size=(1,784)))
+    #init        =   test_X.get_value()[:1]
     zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
     
     samples     =   [[init] + zeros]
-
     output      =   [init]
 
+    for i in range(399):
+        network_state   =   f_sample(*samples[-1])
+       
+        
+        p_X             =   network_state[0]
+
+        if state.autoregression:
+            x_init      =   logit(p_X).flatten()
+
+            for i in range(784):
+                x_init[i]   +=  numpy.dot(sigmoid(x_init), V.get_value().T[i])
+
+            p_X  =   numpy.array([sigmoid(x_init)])
+            # I think it fucks up...
+            p_X  =   numpy.clip(0.999,0.001, p_X)
+            #network_state[0] = p_X
+            network_state[1]    =   f_noise(p_X)
+            network_state       =   network_state[1:]
+
+        output.append(p_X)
+        samples.append(network_state) 
+        
     
+    x_chain =   numpy.vstack(output)
+
+    '''
     # chainnnn : f_noise -> f_sample on last sample
     for i in range(100-1):
         #noisy [x]
@@ -467,10 +488,11 @@ def experiment(state, channel):
     #[samples.append(f_sample(f_noise(samples[-1]))) for i in range(100 - 1)]
     #samples = numpy.vstack(samples)
 
+    '''
     #plot
     img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
     img_samples.save('img_samples.png')
-    print 'took ', time.time(), ' seconds'
+    print 'took ', time.time() - t, ' seconds'
 
     if __name__ == '__main__':
         os.system('eog img_samples.png')
@@ -489,12 +511,12 @@ if __name__ == '__main__':
     
     args.K          =   2
     args.N          =   2
-    args.n_epoch    =   20
+    args.n_epoch    =   40
     args.batch_size =   100
 
-    args.hidden_add_noise_sigma =   0.1
+    args.hidden_add_noise_sigma =   0.25
     args.hidden_dropout         =   0.5
-    args.input_salt_and_pepper  =   0.25
+    args.input_salt_and_pepper  =   0.3
 
     args.learning_rate  =   0.1
     args.momentum       =   0.9
@@ -508,6 +530,8 @@ if __name__ == '__main__':
     args.vis_init       =   False
 
     args.act            =   'rectifier'
+
+    args.autoregression =   True
 
     args.data_path      =   '/data/lisa/data/mnist/'
 
