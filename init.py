@@ -82,7 +82,9 @@ def experiment(state, channel):
 
     # This guy has to be lower diagonal!
     # Proper init?
-    V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 0.001, 'V')
+    #V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 1e-5, 'V')
+    V               =   theano.shared(cast32(numpy.zeros((784,784))))
+   
     
     # lower diagonal matrix with 1's under the main diagonal, will be used for masking
     # Upper diagonal actually, because of parametrisation : X * V -> X_i = 
