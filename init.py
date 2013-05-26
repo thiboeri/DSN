@@ -445,19 +445,7 @@ def experiment(state, channel):
 
     cPickle.dump(params, open('params.pkl', 'w'))
     
-    # Sample some numbers   :   start a chain, save the chain output (whole chain? start with noise)
-
-    ''' Corrupt X '''
-    # this we already have
-    #X = T.fmatrix()
-    #X_corrupt   = salt_and_pepper(X, state.input_salt_and_pepper)
-
     sample_numbers(counter, [])
-
-    #if __name__ == '__main__':
-    #    os.system('eog img_samples.png')
-
-    # Sample from the model -> show the chain
 
     if __name__ == '__main__':
         import ipdb; ipdb.set_trace()
@@ -469,20 +457,20 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     
-    args.K          =   3
+    args.K          =   2
     args.N          =   1
     args.n_epoch    =   200
     args.batch_size =   100
 
-    args.hidden_add_noise_sigma =   0.0748349232722
+    args.hidden_add_noise_sigma =   0.5
     args.hidden_dropout         =   0.5
-    args.input_salt_and_pepper  =   0.163720691517
+    args.input_salt_and_pepper  =   0.2
 
-    args.learning_rate  =   0.282752325902
+    args.learning_rate  =   0.1
     args.momentum       =   0.5
-    args.annealing      =   0.943898298904
+    args.annealing      =   0.95
 
-    args.hidden_size    =   1000
+    args.hidden_size    =   2000
 
     args.input_sampling =   False
     args.noiseless_h1   =   True
