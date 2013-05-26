@@ -276,7 +276,10 @@ def experiment(state, channel):
                                     givens  = {X : indexed_batch},
                                     outputs = show_COST)
     
+    
+    #############
     # Denoise some numbers  :   show number, noisy number, reconstructed number
+    #############
     import random as R
     R.seed(1)
     random_idx      =   numpy.array(R.sample(range(len(test_X.get_value())), 100))
@@ -284,22 +287,6 @@ def experiment(state, channel):
     
     f_noise = theano.function(inputs = [X], outputs = salt_and_pepper(X, state.input_salt_and_pepper))
     noisy_numbers   =   f_noise(test_X.get_value()[random_idx])
-
-    '''
-    H  =   X
-    for w,b in zip(weights_list, bias_list[1:]):
-        H   =   hidden_activation(T.dot(H, w) + b)
-
-    for i in range(K-1,-1,-1):
-        H   =   T.dot(H, weights_list[i].T) + bias_list[i]
-        if i != 0:
-            H   =   hidden_activation(H)
-        else:
-            H   =   T.nnet.sigmoid(H) 
-
-    # reconstruction function
-    f_recon = theano.function(inputs = [X], outputs = H)
-    '''
 
     # Recompile the graph without noise for reconstruction function
     hiddens_R     = [X]
@@ -314,6 +301,68 @@ def experiment(state, channel):
         update_layers(hiddens_R, p_X_chain_R, noisy=False, autoregression=state.autoregression)
 
     f_recon = theano.function(inputs = [X], outputs = p_X_chain_R[-1]) 
+
+
+    ################
+    # for SAMPLING #
+    ###############
+    hiddens_input_S  =   [T.fmatrix() for i in range(K)]
+
+    ''' hidden layer init '''
+    ''' Here the hiddens are given as input also, to keep the chain going '''     
+    hiddens_S     = [X_corrupt] + hiddens_input_S
+    p_X_chain_S   = [] 
+    
+    # ONE update, without autoregression (this will be done in python -> with one update we only have time to produce the next
+    # output layer. So we just get the inverse sigmoid, which gives us Wx + b, and the rest is iteratively constructing the new p_X
+    # using the autoregression weights
+    update_layers(hiddens_S, p_X_chain_S, noisy=True, autoregression=False)
+
+    f_sample    =   theano.function(inputs = [X] + hiddens_input_S, outputs = p_X_chain_S + hiddens_S, on_unused_input='warn')
+
+    # function starts here, input the epoch number..., option for chain start
+    def sample_numbers(epoch_number, chain_start):
+        ts = time.time()
+        numpy.random.seed(1)
+    
+        print 'Generating samples...',
+        t = time.time()
+        #init        =   cast32(numpy.random.uniform(size=(1,784)))
+        init        =   test_X.get_value()[:1]
+        zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
+    
+        samples     =   [[init] + zeros]
+        output      =   [init]
+
+        for i in range(399):
+            network_state   =   f_sample(*samples[-1])
+            
+            p_X             =   network_state[0]
+
+            if state.autoregression:
+                x_init      =   logit(p_X).flatten()
+
+                for i in range(784):
+                    x_init[i]   +=  numpy.dot(sigmoid(x_init), V.get_value().T[i])
+
+                p_X  =   numpy.array([sigmoid(x_init)])
+                # I think it fucks up...
+                p_X  =   numpy.clip(0.999,0.001, p_X)
+                #network_state[0] = p_X
+                network_state[1]    =   f_noise(p_X)
+
+            network_state       =   network_state[1:]
+            output.append(p_X)
+            samples.append(network_state)
+        
+    
+        x_chain =   numpy.vstack(output)
+        #plot
+        img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
+        fname       =   'samples_epoch_'+str(epoch_number)+'.png'
+        img_samples.save(fname)
+        print 'took ', time.time() - ts, ' seconds'
+
 
     # TRAINING
     n_epoch     =   state.n_epoch
@@ -369,14 +418,20 @@ def experiment(state, channel):
         
         print 'W : ', [trunc(abs(w.get_value(borrow=True)).mean()) for w in weights_list]
 
-        # Checking reconstruction
-        reconstructed   =   f_recon(noisy_numbers) 
-        # Concatenate stuff
-        stacked         =   numpy.vstack([numpy.vstack([numbers[i*10 : (i+1)*10], noisy_numbers[i*10 : (i+1)*10], reconstructed[i*10 : (i+1)*10]]) for i in range(10)])
+
+        if (counter % 5) == 0:
+            # Checking reconstruction
+            reconstructed   =   f_recon(noisy_numbers) 
+            # Concatenate stuff
+            stacked         =   numpy.vstack([numpy.vstack([numbers[i*10 : (i+1)*10], noisy_numbers[i*10 : (i+1)*10], reconstructed[i*10 : (i+1)*10]]) for i in range(10)])
         
-        number_reconstruction   =   PIL.Image.fromarray(tile_raster_images(stacked, (28,28), (10,30)))
-        epoch_number    =   reduce(lambda x,y : x + y, ['_'] * (3-len(str(counter)))) + str(counter)
-        number_reconstruction.save('number_reconstruction'+str(counter)+'.png')
+            number_reconstruction   =   PIL.Image.fromarray(tile_raster_images(stacked, (28,28), (10,30)))
+            epoch_number    =   reduce(lambda x,y : x + y, ['_'] * (3-len(str(counter)))) + str(counter)
+            number_reconstruction.save('number_reconstruction'+str(counter)+'.png')
+    
+            
+            sample_numbers(counter, 'seven')
+    
      
         # ANNEAL!
         new_lr = learning_rate.get_value() * annealing
@@ -392,118 +447,15 @@ def experiment(state, channel):
     
     # Sample some numbers   :   start a chain, save the chain output (whole chain? start with noise)
 
-
-    ''' SHITTY WAY OF DOING IT!!!!!!!!!!!!!!!!! COPIED EVERYTHING, AND PASTE!!!! '''
-
     ''' Corrupt X '''
-    X = T.fmatrix()
-    X_corrupt   = salt_and_pepper(X, state.input_salt_and_pepper)
+    # this we already have
+    #X = T.fmatrix()
+    #X_corrupt   = salt_and_pepper(X, state.input_salt_and_pepper)
 
-    hiddens_input   =   [T.fmatrix() for i in range(K)]
+    sample_numbers(counter, [])
 
-    ''' hidden layer init '''
-    ''' Here the hiddens are given as input also, to keep the chain going '''     
-    hiddens     = [X_corrupt] + hiddens_input
-    p_X_chain   = [] 
-    
-    # ONE update, without autoregression (this will be done in python -> with one update we only have time to produce the next
-    # output layer. So we just get the inverse sigmoid, which gives us Wx + b, and the rest is iteratively constructing the new p_X
-    # using the autoregression weights
-    update_layers(hiddens, p_X_chain, noisy=True, autoregression=False)
-    
-    #for i in range(2 * N * K):
-    #    update_layers(hiddens, p_X_chain)
-
-    f_sample    =   theano.function(inputs = [X] + hiddens_input, outputs = p_X_chain+hiddens, on_unused_input='warn')
-
-
-    # call f_sample:
-    # get h1, get p_X_chain[0]
-    # loop to compute x[i]
-
-    numpy.random.seed(1)
-    
-    noise_init  =   numpy.random.uniform
-    
-    print 'Generating samples...',
-
-    t = time.time()
-    #init        =   cast32(numpy.random.uniform(size=(1,784)))
-    init        =   test_X.get_value()[:1]
-    zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
-    
-    samples     =   [[init] + zeros]
-    output      =   [init]
-
-    for i in range(399):
-        network_state   =   f_sample(*samples[-1])
-       
-        
-        p_X             =   network_state[0]
-
-        if state.autoregression:
-            x_init      =   logit(p_X).flatten()
-
-            for i in range(784):
-                x_init[i]   +=  numpy.dot(sigmoid(x_init), V.get_value().T[i])
-
-            p_X  =   numpy.array([sigmoid(x_init)])
-            # I think it fucks up...
-            p_X  =   numpy.clip(0.999,0.001, p_X)
-            #network_state[0] = p_X
-            network_state[1]    =   f_noise(p_X)
-            network_state       =   network_state[1:]
-
-        output.append(p_X)
-        samples.append(network_state) 
-        
-    
-    x_chain =   numpy.vstack(output)
-    #plot
-    img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
-    img_samples.save('img_samples.png')
-    print 'took ', time.time() - t, ' seconds'
-
-
-    
-
-
-    #init        =   numpy.zeros((1,784), dtype='float32')
-
-
-    '''
-    # chainnnn : f_noise -> f_sample on last sample
-    for i in range(100-1):
-        #noisy [x]
-        _input  =   samples[-1][-len(hiddens):]
-
-        #sample
-        sample  = f_sample(*_input)
-
-        # save output
-        output  =   output + sample[:len(hiddens)]
-        # append to sample list
-        samples.append(sample)
-
-    x_chain = [init] + reduce(lambda x,y : x+y, [x[:len(p_X_chain)] for x in samples[1:]])
-
-    x_chain = numpy.vstack(x_chain)
-
-    chain_length = len(x_chain)
-
-    # we want, say 400 samples
-    if chain_length < 400:
-        missing = numpy.zeros((400 - chain_length, 784))
-        x_chain = numpy.vstack((x_chain, missing))
-    else:
-        x_chain = x_chain[:400]
-    
-    #[samples.append(f_sample(f_noise(samples[-1]))) for i in range(100 - 1)]
-    #samples = numpy.vstack(samples)
-
-    '''
-    if __name__ == '__main__':
-        os.system('eog img_samples.png')
+    #if __name__ == '__main__':
+    #    os.system('eog img_samples.png')
 
     # Sample from the model -> show the chain
 
@@ -517,29 +469,29 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     
-    args.K          =   2
-    args.N          =   2
-    args.n_epoch    =   40
+    args.K          =   3
+    args.N          =   1
+    args.n_epoch    =   200
     args.batch_size =   100
 
-    args.hidden_add_noise_sigma =   0.25
+    args.hidden_add_noise_sigma =   0.0748349232722
     args.hidden_dropout         =   0.5
-    args.input_salt_and_pepper  =   0.3
+    args.input_salt_and_pepper  =   0.163720691517
 
-    args.learning_rate  =   0.1
-    args.momentum       =   0.9
-    args.annealing      =   0.95
+    args.learning_rate  =   0.282752325902
+    args.momentum       =   0.5
+    args.annealing      =   0.943898298904
 
     args.hidden_size    =   1000
 
     args.input_sampling =   False
-    args.noiseless_h1   =   False
+    args.noiseless_h1   =   True
 
     args.vis_init       =   False
 
     args.act            =   'rectifier'
 
-    args.autoregression =   True
+    args.autoregression =   False
 
     args.data_path      =   '/data/lisa/data/mnist/'
 
