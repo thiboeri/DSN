@@ -303,6 +303,74 @@ def experiment(state, channel):
     f_recon = theano.function(inputs = [X], outputs = p_X_chain_R[-1]) 
 
 
+    ##################################
+    # Sampling, round 2 motherf***** #
+    ##################################
+    
+    # the input to the sampling function
+    network_state_input     =   [X] + [T.fmatrix() for i in range(K)]
+    'first input will be a noisy number and zeros at the hidden layer, is this correc?'
+   
+    # "Output" state of the network (noisy)
+    # initialized with input, then we apply updates
+    #network_state_output    =   network_state_input
+    # WTFFFF why is it not the same? fucking python list = list not the same as list = list(list) ???
+    network_state_output    =   [X] + network_state_input[1:]
+    
+
+    visible_pX_chain        =   []
+
+    #for i in range(2 * N * K):
+    #    update_layers(network_state_output, visible_pX_chain, noisy=True, autoregression=False)
+
+    # ONE update
+    update_layers(network_state_output, visible_pX_chain, noisy=True, autoregression=False)
+
+    # WHY IS THERE A WARNING????
+    # because the first odd layers are not used -> directly computed FROM THE EVEN layers
+    f_sample2   =   theano.function(inputs = network_state_input, outputs = network_state_output + visible_pX_chain, on_unused_input='warn')
+
+    def sampling_wrapper(NSI):
+        out             =   f_sample2(*NSI)
+        NSO             =   out[:len(network_state_output)]
+        vis_pX_chain    =   out[len(network_state_output):]
+        return NSO, vis_pX_chain
+
+    def sample_some_numbers():
+        # The network's initial state
+        init_vis    =   test_X.get_value()[:1]
+
+        noisy_init_vis  =   f_noise(init_vis)
+
+        network_state   =   [[noisy_init_vis] + [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]]
+
+        visible_chain   =   [init_vis]
+
+        noisy_h0_chain  =   [noisy_init_vis]
+
+        for i in range(399):
+           
+            # feed the last state into the network, compute new state, and obtain visible units expectation chain 
+            net_state_out, vis_pX_chain =   sampling_wrapper(network_state[-1])
+
+            # append to the visible chain
+            visible_chain   +=  vis_pX_chain
+
+            # append state output to the network state chain
+            network_state.append(net_state_out)
+            
+            noisy_h0_chain.append(net_state_out[0])
+
+        return numpy.vstack(visible_chain), numpy.vstack(noisy_h0_chain)
+    
+    def plot_samples(epoch_number):
+        V, H0 = sample_some_numbers()
+        img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
+        fname       =   'samples_epoch_'+str(epoch_number)+'.png'
+        img_samples.save(fname) 
+        
+
+
     ################
     # for SAMPLING #
     ###############
@@ -310,6 +378,7 @@ def experiment(state, channel):
 
     ''' hidden layer init '''
     ''' Here the hiddens are given as input also, to keep the chain going '''     
+    '''
     hiddens_S     = [X_corrupt] + hiddens_input_S
     p_X_chain_S   = [] 
     
@@ -362,6 +431,29 @@ def experiment(state, channel):
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname)
         print 'took ', time.time() - ts, ' seconds'
+
+
+    def numpy_sampling():
+        numpy.random.seed(1)
+        chain_init  =   test_X.get_value()[:1]
+        zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
+
+        network     =   [chain_init+zeros]
+
+        weights     =   [w.get_value(borrow=True) for w in weights_list]
+        biases      =   [b.get_value(borrow=True) for b in bias_list]
+
+        
+        def update_odd_layers():
+            for i in range(1, K + 1, 2):
+                print 
+
+        def update_even_layers():
+            for i in range(0, K + 1, 2):
+                print
+
+    '''
+
 
 
     # TRAINING
@@ -430,7 +522,10 @@ def experiment(state, channel):
             number_reconstruction.save('number_reconstruction'+str(counter)+'.png')
     
             
-            sample_numbers(counter, 'seven')
+            #sample_numbers(counter, 'seven')
+            plot_samples(counter)
+            #if not counter%10:
+            #    import pdb; pdb.set_trace()
     
      
         # ANNEAL!
@@ -457,23 +552,23 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     
-    args.K          =   2
+    args.K          =   1
     args.N          =   1
     args.n_epoch    =   200
     args.batch_size =   100
 
-    args.hidden_add_noise_sigma =   0.5
-    args.hidden_dropout         =   0.5
-    args.input_salt_and_pepper  =   0.2
+    args.hidden_add_noise_sigma =   1e-10
+    args.hidden_dropout         =   1-1e-10
+    args.input_salt_and_pepper  =   0.4
 
-    args.learning_rate  =   0.1
+    args.learning_rate  =   0.25
     args.momentum       =   0.5
-    args.annealing      =   0.95
+    args.annealing      =   0.99
 
     args.hidden_size    =   2000
 
-    args.input_sampling =   False
-    args.noiseless_h1   =   True
+    args.input_sampling =   True
+    args.noiseless_h1   =   False
 
     args.vis_init       =   False
 
