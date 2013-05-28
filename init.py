@@ -80,6 +80,13 @@ def experiment(state, channel):
     bias_list       =   [get_shared_bias(layer_sizes[i], 'b') for i in range(K + 1)]
 
 
+    if __name__ == '__main__':
+        if len(sys.argv) > 1:
+            PARAMS  =   cPickle.load(open(sys.argv[1], 'r'))
+            [p.set_value(lp.get_value(borrow=False)) for lp, p in zip(PARAMS[:weights_list], weights_list)]
+            [p.set_value(lp.get_value(borrow=False)) for lp, p in zip(PARAMS[weights_list:], bias_list)]
+
+
     # This guy has to be lower diagonal!
     # Proper init?
     #V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 1e-5, 'V')
@@ -211,6 +218,9 @@ def experiment(state, channel):
     elif state.act == 'rectifier':
         print 'Using rectifier activation'
         hidden_activation = lambda x : T.maximum(cast32(0), x)
+    elif state.act == 'tanh':
+        hidden_activation = lambda x : T.tanh(x)    
+   
     
     ''' Corrupt X '''
     X_corrupt   = salt_and_pepper(X, state.input_salt_and_pepper)
@@ -276,7 +286,11 @@ def experiment(state, channel):
                                     givens  = {X : indexed_batch},
                                     outputs = show_COST)
     
-    
+    f_test      =   theano.function(inputs  =   [X],
+                                    outputs =   [X_corrupt] + hiddens[0] + p_X_chain,
+                                    on_unused_input = 'warn')
+
+
     #############
     # Denoise some numbers  :   show number, noisy number, reconstructed number
     #############
@@ -366,6 +380,7 @@ def experiment(state, channel):
     def plot_samples(epoch_number):
         V, H0 = sample_some_numbers()
         img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
+        
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname) 
         
@@ -518,7 +533,7 @@ def experiment(state, channel):
             stacked         =   numpy.vstack([numpy.vstack([numbers[i*10 : (i+1)*10], noisy_numbers[i*10 : (i+1)*10], reconstructed[i*10 : (i+1)*10]]) for i in range(10)])
         
             number_reconstruction   =   PIL.Image.fromarray(tile_raster_images(stacked, (28,28), (10,30)))
-            epoch_number    =   reduce(lambda x,y : x + y, ['_'] * (3-len(str(counter)))) + str(counter)
+            #epoch_number    =   reduce(lambda x,y : x + y, ['_'] * (4-len(str(counter)))) + str(counter)
             number_reconstruction.save('number_reconstruction'+str(counter)+'.png')
     
             
@@ -526,7 +541,6 @@ def experiment(state, channel):
             plot_samples(counter)
             #if not counter%10:
             #    import pdb; pdb.set_trace()
-    
      
         # ANNEAL!
         new_lr = learning_rate.get_value() * annealing
@@ -540,7 +554,8 @@ def experiment(state, channel):
 
     cPickle.dump(params, open('params.pkl', 'w'))
     
-    sample_numbers(counter, [])
+    plot_samples(counter)
+    #sample_numbers(counter, [])
 
     if __name__ == '__main__':
         import ipdb; ipdb.set_trace()
@@ -552,12 +567,13 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     args = parser.parse_args()
     
-    args.K          =   1
+    args.K          =   2
     args.N          =   1
-    args.n_epoch    =   200
+    args.n_epoch    =   500
     args.batch_size =   100
 
-    args.hidden_add_noise_sigma =   1e-10
+    #args.hidden_add_noise_sigma =   1e-10
+    args.hidden_add_noise_sigma =   2.0
     args.hidden_dropout         =   1-1e-10
     args.input_salt_and_pepper  =   0.4
 
@@ -568,11 +584,12 @@ if __name__ == '__main__':
     args.hidden_size    =   2000
 
     args.input_sampling =   True
-    args.noiseless_h1   =   False
+    args.noiseless_h1   =   True
 
     args.vis_init       =   False
 
-    args.act            =   'rectifier'
+    #args.act            =   'rectifier'
+    args.act            =   'tanh'
 
     args.autoregression =   False
 
