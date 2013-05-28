@@ -203,7 +203,7 @@ def experiment(state, channel):
 
 
         # pre activation noise            
-        if i != 0 and add_noise:
+        if i != 0 and add_noise and not state.scaled_noise:
             print 'Adding pre-activation gaussian noise'
             hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
       
