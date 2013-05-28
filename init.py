@@ -641,7 +641,7 @@ if __name__ == '__main__':
     args.momentum       =   0.5
     args.annealing      =   0.99
 
-    args.hidden_size    =   2000
+    args.hidden_size    =   3000
 
     args.input_sampling =   True
     args.noiseless_h1   =   True
