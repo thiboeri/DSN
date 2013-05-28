@@ -43,6 +43,9 @@ def load_mnist(path):
 
 def experiment(state, channel):
     print state
+    f = open('config', 'w')
+    f.write(str(state))
+    f.close()
     # LOAD DATA
     (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
 
@@ -107,6 +110,7 @@ def experiment(state, channel):
         return OUT
 
     def add_gaussian_noise(IN, std = 1):
+        print 'GAUSSIAN NOISE : ', std
         noise   =   MRG.normal(avg  = 0, std  = std, size = IN.shape, dtype='float32')
         OUT     =   IN + noise
         return OUT
@@ -157,6 +161,29 @@ def experiment(state, channel):
 
         elif i == K:
             hiddens[i]  =   T.dot(hiddens[i-1], weights_list[i-1]) + bias_list[i]
+            # TODO compute d h_i / d h_(i-1)
+
+            # derivee de h[i] par rapport a h[i-1]
+            # W is what transpose...
+
+            W   =   weights_list[i-1]
+            # n_i x n_(i-1)
+
+            h   =   T.tanh(hiddens[i])
+            # k x n_i
+
+            J  =   (cast32(1) - h**2).dimshuffle(0,'x',1) * W.dimshuffle('x',0,1)
+            # k x ? x n2
+            # ? x n1 x n2
+
+            # JJ^T : k x n2
+
+            # this is a tensor... (batch x ni x ni-1)
+            #d_hK_d_hi   =   (cast32(1) - T.tanh(hiddens[i]) ** 2) * W
+            # h : k x n2
+            # W : n1 x n2           Colonnes de W : weight vector de chaque neurones de h[i]
+            #                       Rangees de W:
+            # J : k x n2 x n1
 
         else:
             # next layer        :   layers[i+1], assigned weights : W_i
@@ -167,7 +194,9 @@ def experiment(state, channel):
         if i==1 and state.noiseless_h1:
             print '>>NO noise in first layer'
             add_noise   =   False
-            
+
+
+        # pre activation noise            
         if i != 0 and add_noise:
             print 'Adding pre-activation gaussian noise'
             hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
@@ -179,6 +208,12 @@ def experiment(state, channel):
         else:
             print 'Hidden units'
             hiddens[i]  =   hidden_activation(hiddens[i])
+
+        # pre activation noise            
+        if i != 0 and add_noise:
+            print 'Adding post-activation gaussian noise'
+            hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
+
        
         # POST ACTIVATION NOISE 
         if i != 0 and mul_noise:
@@ -575,13 +610,13 @@ if __name__ == '__main__':
     #args.hidden_add_noise_sigma =   1e-10
     args.hidden_add_noise_sigma =   2.0
     args.hidden_dropout         =   1-1e-10
-    args.input_salt_and_pepper  =   0.4
+    args.input_salt_and_pepper  =   0.25
 
     args.learning_rate  =   0.25
     args.momentum       =   0.5
     args.annealing      =   0.99
 
-    args.hidden_size    =   2000
+    args.hidden_size    =   1000
 
     args.input_sampling =   True
     args.noiseless_h1   =   True
