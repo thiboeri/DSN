@@ -559,10 +559,10 @@ def experiment(state, channel):
 
         #valid
         valid_cost  =   []
-        #for i in range(len(valid_X.get_value(borrow=True)) / 100):
-        #    valid_cost.append(f_cost(valid_X.get_value()[i * 100 : (i+1) * batch_size]))
-        #valid_cost = numpy.mean(valid_cost)
-        valid_cost  =   123
+        for i in range(len(valid_X.get_value(borrow=True)) / 100):
+            valid_cost.append(f_cost(valid_X.get_value()[i * 100 : (i+1) * batch_size]))
+        valid_cost = numpy.mean(valid_cost)
+        #valid_cost  =   123
         valid_costs.append(valid_cost)
         print 'Valid : ', trunc(valid_cost), '\t',
 
