@@ -168,26 +168,10 @@ def experiment(state, channel):
             # derivee de h[i] par rapport a h[i-1]
             # W is what transpose...
 
-            '''
-            def _sample(self, x):
-                    hn = self._encode(x)
-                    ww = T.dot(self.W.T, self.W)
-                    for _ in range(self.K):
-                        s = hn * (1. - hn)
-                        jj = ww * s.dimshuffle(0, 'x', 1) * s.dimshuffle(0, 1, 'x')
-                        alpha = self.theano_rng.normal(size=hn.shape, avg=0,
-                                std=self.sigma, dtype=theano.config.floatX)
-                        delta = (alpha.dimshuffle(0, 1, 'x') * jj).sum(1)
-                        zn = self._decode(hn + delta)
-                        hn = self._encode(zn)
-
-            '''
-
             if state.scaled_noise:
             
                 # to remove this, remove the post_act_noise variable initialisation and the following block
                 # and put back post activation noise like it was (just normal calling of the function)
-
                 W   =   weights_list[i-1]
                 hn  =   T.tanh(hiddens[i])
                 ww  =   T.dot(W.T, W)
@@ -648,16 +632,16 @@ if __name__ == '__main__':
     args.batch_size =   100
 
     #args.hidden_add_noise_sigma =   1e-10
-    args.scaled_noise           =   True
-    args.hidden_add_noise_sigma =   1.0
+    args.scaled_noise           =   False
+    args.hidden_add_noise_sigma =   2.0
     args.hidden_dropout         =   0
-    args.input_salt_and_pepper  =   0.4
+    args.input_salt_and_pepper  =   0.3
 
     args.learning_rate  =   0.25
     args.momentum       =   0.5
     args.annealing      =   0.99
 
-    args.hidden_size    =   1000
+    args.hidden_size    =   2000
 
     args.input_sampling =   True
     args.noiseless_h1   =   True
