@@ -6,6 +6,7 @@ import PIL.Image
 from collections import OrderedDict
 from image_tiler import *
 import time
+import pylearn.io.filetensor as ft
 
 cast32      = lambda x : numpy.cast['float32'](x)
 trunc       = lambda x : str(x)[:8]
@@ -152,6 +153,7 @@ def experiment(state, channel):
 
     def simple_update_layer(hiddens, p_X_chain, i, autoregression=False, mul_noise=True, add_noise=True):
         # Compute the dot product, whatever layer
+        post_act_noise  =   0
         if i == 0:
             hiddens[i]  =   T.dot(hiddens[i+1], weights_list[i].T) + bias_list[i]           
             
@@ -166,24 +168,44 @@ def experiment(state, channel):
             # derivee de h[i] par rapport a h[i-1]
             # W is what transpose...
 
-            W   =   weights_list[i-1]
-            # n_i x n_(i-1)
+            '''
+            def _sample(self, x):
+                    hn = self._encode(x)
+                    ww = T.dot(self.W.T, self.W)
+                    for _ in range(self.K):
+                        s = hn * (1. - hn)
+                        jj = ww * s.dimshuffle(0, 'x', 1) * s.dimshuffle(0, 1, 'x')
+                        alpha = self.theano_rng.normal(size=hn.shape, avg=0,
+                                std=self.sigma, dtype=theano.config.floatX)
+                        delta = (alpha.dimshuffle(0, 1, 'x') * jj).sum(1)
+                        zn = self._decode(hn + delta)
+                        hn = self._encode(zn)
 
-            h   =   T.tanh(hiddens[i])
-            # k x n_i
+            '''
 
-            J  =   (cast32(1) - h**2).dimshuffle(0,'x',1) * W.dimshuffle('x',0,1)
-            # k x ? x n2
-            # ? x n1 x n2
+            if state.scaled_noise:
+            
+                # to remove this, remove the post_act_noise variable initialisation and the following block
+                # and put back post activation noise like it was (just normal calling of the function)
 
-            # JJ^T : k x n2
+                W   =   weights_list[i-1]
+                hn  =   T.tanh(hiddens[i])
+                ww  =   T.dot(W.T, W)
+                s   =   (cast32(1) - hn**2)
+                jj  =   ww * s.dimshuffle(0, 'x', 1) * s.dimshuffle(0, 1, 'x')
+                scale_noise =   lambda alpha : (alpha.dimshuffle(0, 1, 'x') * jj).sum(1)
 
-            # this is a tensor... (batch x ni x ni-1)
-            #d_hK_d_hi   =   (cast32(1) - T.tanh(hiddens[i]) ** 2) * W
-            # h : k x n2
-            # W : n1 x n2           Colonnes de W : weight vector de chaque neurones de h[i]
-            #                       Rangees de W:
-            # J : k x n2 x n1
+                print 'SCALED_NOISE!!!, Last layer : set add_noise to False, add its own scaled noise'
+                add_noise   =   False
+
+                #pre_act_noise   =   MRG.normal(avg  = 0, std  = std, size = hn.shape, dtype='float32')
+                post_act_noise  =   MRG.normal(avg  = 0, std  = state.hidden_add_noise_sigma, size = hn.shape, dtype='float32')
+
+                #pre_act_noise   =   scale_noise(pre_act_noise)
+                post_act_noise  =   scale_noise(post_act_noise)
+
+                #hiddens[i]      +=  pre_act_noise
+
 
         else:
             # next layer        :   layers[i+1], assigned weights : W_i
@@ -200,6 +222,9 @@ def experiment(state, channel):
         if i != 0 and add_noise:
             print 'Adding pre-activation gaussian noise'
             hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
+      
+      
+      
        
         # ACTIVATION!
         if i == 0:
@@ -209,16 +234,19 @@ def experiment(state, channel):
             print 'Hidden units'
             hiddens[i]  =   hidden_activation(hiddens[i])
 
-        # pre activation noise            
+        # post activation noise            
         if i != 0 and add_noise:
             print 'Adding post-activation gaussian noise'
-            hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
+            if state.scaled_noise:
+                hiddens[i]  +=  post_act_noise
+            else:
+                hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
 
-       
+
         # POST ACTIVATION NOISE 
-        if i != 0 and mul_noise:
+        if i != 0 and mul_noise and state.hidden_dropout:
             # dropout if hidden
-            print 'Dropping out'
+            print 'Dropping out', state.hidden_dropout
             hiddens[i]  =   dropout(hiddens[i], state.hidden_dropout)
         elif i == 0:
             # if input layer -> append p(X|...)
@@ -413,12 +441,13 @@ def experiment(state, channel):
         return numpy.vstack(visible_chain), numpy.vstack(noisy_h0_chain)
     
     def plot_samples(epoch_number):
+        to_sample = time.time()
         V, H0 = sample_some_numbers()
         img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
         
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname) 
-        
+        print 'Took ' + str(time.time() - to_sample) + ' to sample 400 numbers'
 
 
     ################
@@ -504,6 +533,15 @@ def experiment(state, channel):
 
     '''
 
+    def save_params(n, params):
+        fname   =   'params_epoch_'+str(n)+'.ft'
+        f       =   open(fname, 'w')
+        
+        for p in params:
+            ft.write(f, p.get_value(borrow=True))
+       
+        f.close() 
+
 
 
     # TRAINING
@@ -537,9 +575,10 @@ def experiment(state, channel):
 
         #valid
         valid_cost  =   []
-        for i in range(len(valid_X.get_value(borrow=True)) / 100):
-            valid_cost.append(f_cost(valid_X.get_value()[i * 100 : (i+1) * batch_size]))
-        valid_cost = numpy.mean(valid_cost)
+        #for i in range(len(valid_X.get_value(borrow=True)) / 100):
+        #    valid_cost.append(f_cost(valid_X.get_value()[i * 100 : (i+1) * batch_size]))
+        #valid_cost = numpy.mean(valid_cost)
+        valid_cost  =   123
         valid_costs.append(valid_cost)
         print 'Valid : ', trunc(valid_cost), '\t',
 
@@ -574,8 +613,9 @@ def experiment(state, channel):
             
             #sample_numbers(counter, 'seven')
             plot_samples(counter)
-            #if not counter%10:
-            #    import pdb; pdb.set_trace()
+    
+            #save params
+            save_params(counter, params)
      
         # ANNEAL!
         new_lr = learning_rate.get_value() * annealing
@@ -604,13 +644,14 @@ if __name__ == '__main__':
     
     args.K          =   2
     args.N          =   1
-    args.n_epoch    =   500
+    args.n_epoch    =   250
     args.batch_size =   100
 
     #args.hidden_add_noise_sigma =   1e-10
-    args.hidden_add_noise_sigma =   2.0
-    args.hidden_dropout         =   1-1e-10
-    args.input_salt_and_pepper  =   0.25
+    args.scaled_noise           =   True
+    args.hidden_add_noise_sigma =   1.0
+    args.hidden_dropout         =   0
+    args.input_salt_and_pepper  =   0.4
 
     args.learning_rate  =   0.25
     args.momentum       =   0.5
