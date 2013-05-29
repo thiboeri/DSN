@@ -628,20 +628,20 @@ if __name__ == '__main__':
     
     args.K          =   2
     args.N          =   1
-    args.n_epoch    =   250
+    args.n_epoch    =   1000
     args.batch_size =   100
 
     #args.hidden_add_noise_sigma =   1e-10
     args.scaled_noise           =   False
-    args.hidden_add_noise_sigma =   2.0
+    args.hidden_add_noise_sigma =   2
     args.hidden_dropout         =   0
-    args.input_salt_and_pepper  =   0.3
+    args.input_salt_and_pepper  =   0.4
 
     args.learning_rate  =   0.25
     args.momentum       =   0.5
-    args.annealing      =   0.99
+    args.annealing      =   0.995
 
-    args.hidden_size    =   3000
+    args.hidden_size    =   1500
 
     args.input_sampling =   True
     args.noiseless_h1   =   True
