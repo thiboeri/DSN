@@ -7,6 +7,8 @@ from collections import OrderedDict
 from image_tiler import *
 import time
 import pylearn.io.filetensor as ft
+from likelihood_estimation_parzen import * 
+
 
 cast32      = lambda x : numpy.cast['float32'](x)
 trunc       = lambda x : str(x)[:8]
@@ -44,15 +46,17 @@ def load_mnist(path):
 
 def experiment(state, channel):
     print 'LOADING MODEL CONFIG'
-    import pdb; pdb.set_trace()
+    config_path =   '/'+os.path.join(*state.model_path.split('/'))
 
-    print state
-    f = open('config', 'w')
-    f.write(str(state))
-    f.close()
-    # LOAD DATA
+    if 'config' in os.listdir(config_path):
+        config_file = open(os.path.join(config_path, 'config'), 'r')
+        config      =   config_file.readlines()
+        config_vals =   config[0].split('(')[1:][0].split(')')[:-1][0].split(', ')
+
+        for CV in config_vals:
+            exec('state.'+CV) in globals(), locals()
+
     (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
-
     train_X = numpy.concatenate((train_X, valid_X))
 
     numpy.random.seed(1)
@@ -82,25 +86,26 @@ def experiment(state, channel):
     bias_list       =   [get_shared_bias(layer_sizes[i], 'b') for i in range(K + 1)]
 
 
-    if __name__ == '__main__':
-        if len(sys.argv) > 1:
-            PARAMS  =   cPickle.load(open(sys.argv[1], 'r'))
-            [p.set_value(lp.get_value(borrow=False)) for lp, p in zip(PARAMS[:weights_list], weights_list)]
-            [p.set_value(lp.get_value(borrow=False)) for lp, p in zip(PARAMS[weights_list:], bias_list)]
+    # LOAD PARAMS
+    print 'Loading model params...',
+    print 'Loading last epoch...',
+    param_files =   filter(lambda x: x.endswith('ft'), os.listdir(config_path))
+    max_epoch   =   numpy.argmax([int(x.split('_')[-1].split('.')[0]) for x in param_files])
+
+    params_to_load  =   os.path.join(config_path, param_files[max_epoch])
+    F   =   open(params_to_load, 'r')
+
+    n_params = len(weights_list) + len(bias_list)
+    print param_files[max_epoch]
+
+    for i in range(0, len(weights_list)):
+        weights_list[i].set_value(ft.read(F))
+
+    for i in range(len(bias_list)):
+        bias_list[i].set_value(ft.read(F))
 
 
-    # This guy has to be lower diagonal!
-    # Proper init?
-    #V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 1e-5, 'V')
-    V               =   theano.shared(cast32(numpy.zeros((784,784))))
-   
-    
-    # lower diagonal matrix with 1's under the main diagonal, will be used for masking
-    # Upper diagonal actually, because of parametrisation : X * V -> X_i = 
-    
-    dim = layer_sizes[0]
-    lower_diag_I    =   cast32((numpy.tril(numpy.ones((dim, dim))).T + 1) % 2).T
-    V.set_value(lower_diag_I * V.get_value())
+    print 'Model parameters loaded!!'
 
         # functions
     def dropout(IN, p = 0.5):
@@ -154,10 +159,6 @@ def experiment(state, channel):
         post_act_noise  =   0
         if i == 0:
             hiddens[i]  =   T.dot(hiddens[i+1], weights_list[i].T) + bias_list[i]           
-            
-            if autoregression:
-                print 'First layer auto-regressor'
-                hiddens[i] = hiddens[i] + T.dot(X, V)
 
         elif i == K:
             hiddens[i]  =   T.dot(hiddens[i-1], weights_list[i-1]) + bias_list[i]
@@ -270,72 +271,9 @@ def experiment(state, channel):
     ''' Corrupt X '''
     X_corrupt   = salt_and_pepper(X, state.input_salt_and_pepper)
 
-    ''' hidden layer init '''
-    
-    hiddens     = [X_corrupt]
-    p_X_chain   = [] 
+    f_noise = theano.function(inputs = [X], outputs = salt_and_pepper(X, state.input_salt_and_pepper))
 
-    print "Hidden units initialization"
-    for w,b in zip(weights_list, bias_list[1:]):
-        # no noise, basic f prop to
-        # init f prop
-        #hiddens.append(hidden_activation(T.dot(hiddens[-1], w) + b))
-
-        # init with zeros
-        print "Init hidden units at zero before creating the graph"
-        hiddens.append(T.zeros_like(T.dot(hiddens[-1], w)))
-
-    # The layer update scheme
-    print "Building the graph :", 2*N*K,"updates"
-    for i in range(2 * N * K):
-        update_layers(hiddens, p_X_chain, autoregression = state.autoregression)
-    
-
-    # COST AND GRADIENTS    
-
-    print 'Cost w.r.t p(X|...) at every step in the graph'
-    #COST        =   T.mean(T.nnet.binary_crossentropy(reconstruction, X))
-    COST        =   [T.mean(T.nnet.binary_crossentropy(rX, X)) for rX in p_X_chain]
-    show_COST   =   COST[-1] 
-    COST        =   numpy.sum(COST)
-
-    params          =   weights_list + bias_list
-    if state.autoregression:
-        params      +=  [V]
-
-    gradient        =   T.grad(COST, params)
-    if state.autoregression:
-        gradient[-1]=(gradient[-1] * lower_diag_I)
-
-    gradient_buffer =   [theano.shared(numpy.zeros(x.get_value().shape, dtype='float32')) for x in params]
-    
-    m_gradient      =   [momentum * gb + (cast32(1) - momentum) * g for (gb, g) in zip(gradient_buffer, gradient)]
-    g_updates       =   [(p, p - learning_rate * mg) for (p, mg) in zip(params, m_gradient)]
-    b_updates       =   zip(gradient_buffer, m_gradient)
-
-    updates         =   g_updates + b_updates
-    #if state.autoregression:
-    #    updates     +=  [(V, V * lower_diag_I)]
-    updates         =   OrderedDict(g_updates + b_updates)
-    
-    #updates     =   OrderedDict([(p, p - learning_rate * g) for (p, g) in zip(params, gradient)])
-
-
-    f_cost      =   theano.function(inputs = [X], outputs = show_COST)
-    
-    indexed_batch   = train_X[index * state.batch_size : (index+1) * state.batch_size]
-    sampled_batch   = MRG.binomial(p = indexed_batch, size = indexed_batch.shape, dtype='float32')
-    
-    f_learn     =   theano.function(inputs  = [index], 
-                                    updates = updates, 
-                                    givens  = {X : indexed_batch},
-                                    outputs = show_COST)
-    
-    f_test      =   theano.function(inputs  =   [X],
-                                    outputs =   [X_corrupt] + hiddens[0] + p_X_chain,
-                                    on_unused_input = 'warn')
-
-
+    ''' Commented for now (unless we need more denoising stuff)
     #############
     # Denoise some numbers  :   show number, noisy number, reconstructed number
     #############
@@ -344,7 +282,6 @@ def experiment(state, channel):
     random_idx      =   numpy.array(R.sample(range(len(test_X.get_value())), 100))
     numbers         =   test_X.get_value()[random_idx]
     
-    f_noise = theano.function(inputs = [X], outputs = salt_and_pepper(X, state.input_salt_and_pepper))
     noisy_numbers   =   f_noise(test_X.get_value()[random_idx])
 
     # Recompile the graph without noise for reconstruction function
@@ -361,7 +298,8 @@ def experiment(state, channel):
 
     f_recon = theano.function(inputs = [X], outputs = p_X_chain_R[-1]) 
 
-
+    '''
+    
     ##################################
     # Sampling, round 2 motherf***** #
     ##################################
@@ -395,7 +333,8 @@ def experiment(state, channel):
         vis_pX_chain    =   out[len(network_state_output):]
         return NSO, vis_pX_chain
 
-    def sample_some_numbers():
+    def sample_some_numbers(n_digits = 400):
+        to_sample = time.time()
         # The network's initial state
         init_vis    =   test_X.get_value()[:1]
 
@@ -407,7 +346,7 @@ def experiment(state, channel):
 
         noisy_h0_chain  =   [noisy_init_vis]
 
-        for i in range(399):
+        for i in range(n_digits - 1):
            
             # feed the last state into the network, compute new state, and obtain visible units expectation chain 
             net_state_out, vis_pX_chain =   sampling_wrapper(network_state[-1])
@@ -420,16 +359,15 @@ def experiment(state, channel):
             
             noisy_h0_chain.append(net_state_out[0])
 
+        print 'Took ' + str(time.time() - to_sample) + ' to sample ' + str(n_digits) + ' digits'
         return numpy.vstack(visible_chain), numpy.vstack(noisy_h0_chain)
     
     def plot_samples(epoch_number):
-        to_sample = time.time()
         V, H0 = sample_some_numbers()
         img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
         
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname) 
-        print 'Took ' + str(time.time() - to_sample) + ' to sample 400 numbers'
 
     def save_params(n, params):
         fname   =   'params_epoch_'+str(n)+'.ft'
@@ -441,11 +379,101 @@ def experiment(state, channel):
         f.close() 
 
 
+    def plot_one_digit(digit):
+        plot_one    =   PIL.Image.fromarray(tile_raster_images(digit, (28,28), (1,1)))
+        fname       =   'one_digit.png'
+        plot_one.save(fname)
+        os.system('eog one_digit.png')
 
-    plot_samples(counter)
+    def inpainting(digit):
+        # The network's initial state
+
+        # NOISE INIT
+        init_vis    =   cast32(numpy.random.uniform(size=digit.shape))
+
+        #noisy_init_vis  =   f_noise(init_vis)
+        #noisy_init_vis  =   cast32(numpy.random.uniform(size=init_vis.shape))
+
+        # INDEXES FOR VISIBLE AND NOISY PART
+        noise_idx = (numpy.arange(784) % 28 < 14)
+        fixed_idx = (numpy.arange(784) % 28 > 14)
+        # function to re-init the visible to the same noise
+
+        # FUNCTION TO RESET HALF VISIBLE TO DIGIT
+        def reset_vis(V):
+            V[0][fixed_idx] =   digit[0][fixed_idx]
+            return V
+        
+        # INIT DIGIT : NOISE and RESET HALF TO DIGIT
+        init_vis = reset_vis(init_vis)
+
+        network_state   =   [[init_vis] + [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]]
+
+        visible_chain   =   [init_vis]
+
+        noisy_h0_chain  =   [init_vis]
+
+        for i in range(49):
+           
+            # feed the last state into the network, compute new state, and obtain visible units expectation chain 
+            net_state_out, vis_pX_chain =   sampling_wrapper(network_state[-1])
+
+
+            # reset half the digit
+            net_state_out[0] = reset_vis(net_state_out[0])
+            vis_pX_chain[0]  = reset_vis(vis_pX_chain[0])
+
+            # append to the visible chain
+            visible_chain   +=  vis_pX_chain
+
+            # append state output to the network state chain
+            network_state.append(net_state_out)
+            
+            noisy_h0_chain.append(net_state_out[0])
+
+        return numpy.vstack(visible_chain), numpy.vstack(noisy_h0_chain)
+ 
+
+    #V_inpaint, H_inpaint = inpainting(test_X.get_value()[:1])
+    #plot_one    =   PIL.Image.fromarray(tile_raster_images(V_inpaint, (28,28), (1,50)))
+    #fname       =   'test.png'
+    #plot_one.save(fname)
+    #os.system('eog test.png')
+                                   
+   
+    #get all digits
+    digit_idx = [(test_Y==i).argmax() for i in range(10)]
+    inpaint_list = []
+
+    for idx in digit_idx:
+        DIGIT = test_X.get_value()[idx:idx+1] 
+        V_inpaint, H_inpaint = inpainting(DIGIT)
+        inpaint_list.append(V_inpaint)
+
+    INPAINTING  =   numpy.vstack(inpaint_list)
+
+    plot_inpainting =   PIL.Image.fromarray(tile_raster_images(INPAINTING, (28,28), (10,50)))
+
+    fname   =   'inpainting.png'
+
+    plot_inpainting.save(fname)
+
+    if False and __name__ ==  "__main__":
+        os.system('eog inpainting.png')
+
+
+
+    # PARZEN 
+    # Generating 10000 samples
+    samples, _ = sample_some_numbers(n_digits=10000) 
+    
+    Mean, Std   =   main(state.sigma_parzen, samples, test_X.get_value())
+
+    #plot_samples(999)
     #sample_numbers(counter, [])
 
     if __name__ == '__main__':
+        
         import ipdb; ipdb.set_trace()
     
     return channel.COMPLETE
@@ -484,6 +512,21 @@ if __name__ == '__main__':
 
     args.data_path      =   '/data/lisa/data/mnist/'
 
-    args.model_path     =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/2layer_1000tanh_prepostadd2_SP0.3/params_epoch_250.ft'
+    args.model_path     =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/3layer_1500tanh_prepostadd2_SP0.4/'
 
+    #models_to_evaluate  =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/'
+    models_to_evaluate  =   sys.argv[1]
+
+    models = filter(lambda x:numpy.any(['params' in P for P in os.listdir(os.path.join(models_to_evaluate, x))]), os.listdir(models_to_evaluate))
+    
+    for model in models:
+        args.model_path = os.path.join(models_to_evaluate, model)
+        print args.model_path
+        args.sigma_parzen   =   0.2
+        (M,S)   =   experiment(args, None)
+        fname   =   'parzen_ll'
+        f       =   open(os.path.join(models_to_evaluate, fname), 'w')
+        f.write(M)
+        f.write(S)
+        f.close()
     experiment(args, None)
