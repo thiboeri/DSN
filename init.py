@@ -42,15 +42,37 @@ def load_mnist(path):
     data = cPickle.load(open(os.path.join(path,'mnist.pkl'), 'r'))
     return data
 
+def load_tfd(path):
+    import scipy.io as io
+    data = io.loadmat(os.path.join(path, 'TFD_48x48.mat'))
+    X = cast32(data['images'])/cast32(255)
+    X = X.reshape((X.shape[0], X.shape[1] * X.shape[2]))
+    labels  = data['labs_ex'].flatten()
+    labeled = labels != -1
+    unlabeled   =   labels == -1  
+    train_X =   X[unlabeled]
+    valid_X =   X[unlabeled][:100] # Stuf
+    test_X  =   X[labeled]
+
+    del data
+
+    return (train_X, labels[unlabeled]), (valid_X, labels[unlabeled][:100]), (test_X, labels[labeled])
+
 def experiment(state, channel):
     print state
     f = open('config', 'w')
     f.write(str(state))
     f.close()
     # LOAD DATA
-    (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
+    if 'mnist' in state.data_path:
+        (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
+        train_X = numpy.concatenate((train_X, valid_X))
+    elif 'TFD' in state.data_path:
+        (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_tfd(state.data_path)
+    
+    N_input =   train_X.shape[1]
+    root_N_input = numpy.sqrt(N_input)
 
-    train_X = numpy.concatenate((train_X, valid_X))
 
     #train_X = binarize(train_X)
     #valid_X = binarize(valid_X)
@@ -71,7 +93,7 @@ def experiment(state, channel):
     # SPECS
     K               =   state.K
     N               =   state.N
-    layer_sizes     =   [784] + [state.hidden_size] * K
+    layer_sizes     =   [N_input] + [state.hidden_size] * K
     learning_rate   =   theano.shared(cast32(state.learning_rate))
     annealing       =   cast32(state.annealing)
     momentum        =   theano.shared(cast32(state.momentum))
@@ -94,7 +116,7 @@ def experiment(state, channel):
     # This guy has to be lower diagonal!
     # Proper init?
     #V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 1e-5, 'V')
-    V               =   theano.shared(cast32(numpy.zeros((784,784))))
+    V               =   theano.shared(cast32(numpy.zeros((N_input,N_input))))
    
     
     # lower diagonal matrix with 1's under the main diagonal, will be used for masking
@@ -427,7 +449,7 @@ def experiment(state, channel):
     def plot_samples(epoch_number):
         to_sample = time.time()
         V, H0 = sample_some_numbers()
-        img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
+        img_samples =   PIL.Image.fromarray(tile_raster_images(V, (root_N_input,root_N_input), (20,20)))
         
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname) 
@@ -459,7 +481,7 @@ def experiment(state, channel):
     
         print 'Generating samples...',
         t = time.time()
-        #init        =   cast32(numpy.random.uniform(size=(1,784)))
+        #init        =   cast32(numpy.random.uniform(size=(1,N_input)))
         init        =   test_X.get_value()[:1]
         zeros       =   [numpy.zeros((1,len(b.get_value())), dtype='float32') for b in bias_list[1:]]
     
@@ -474,7 +496,7 @@ def experiment(state, channel):
             if state.autoregression:
                 x_init      =   logit(p_X).flatten()
 
-                for i in range(784):
+                for i in range(N_input):
                     x_init[i]   +=  numpy.dot(sigmoid(x_init), V.get_value().T[i])
 
                 p_X  =   numpy.array([sigmoid(x_init)])
@@ -490,7 +512,7 @@ def experiment(state, channel):
     
         x_chain =   numpy.vstack(output)
         #plot
-        img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (28,28), (20,20)))
+        img_samples =   PIL.Image.fromarray(tile_raster_images(x_chain, (root_N_input,root_N_input), (20,20)))
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname)
         print 'took ', time.time() - ts, ' seconds'
@@ -590,7 +612,7 @@ def experiment(state, channel):
             # Concatenate stuff
             stacked         =   numpy.vstack([numpy.vstack([numbers[i*10 : (i+1)*10], noisy_numbers[i*10 : (i+1)*10], reconstructed[i*10 : (i+1)*10]]) for i in range(10)])
         
-            number_reconstruction   =   PIL.Image.fromarray(tile_raster_images(stacked, (28,28), (10,30)))
+            number_reconstruction   =   PIL.Image.fromarray(tile_raster_images(stacked, (root_N_input,root_N_input), (10,30)))
             #epoch_number    =   reduce(lambda x,y : x + y, ['_'] * (4-len(str(counter)))) + str(counter)
             number_reconstruction.save('number_reconstruction'+str(counter)+'.png')
     
@@ -633,15 +655,15 @@ if __name__ == '__main__':
 
     #args.hidden_add_noise_sigma =   1e-10
     args.scaled_noise           =   False
-    args.hidden_add_noise_sigma =   2
+    args.hidden_add_noise_sigma =   1
     args.hidden_dropout         =   0
-    args.input_salt_and_pepper  =   0.4
+    args.input_salt_and_pepper  =   0.2
 
     args.learning_rate  =   0.25
     args.momentum       =   0.5
     args.annealing      =   0.995
 
-    args.hidden_size    =   1500
+    args.hidden_size    =   2000
 
     args.input_sampling =   True
     args.noiseless_h1   =   True
@@ -653,6 +675,7 @@ if __name__ == '__main__':
 
     args.autoregression =   False
 
-    args.data_path      =   '/data/lisa/data/mnist/'
+    #args.data_path      =   '/data/lisa/data/mnist/'
+    args.data_path      =   '/data/lisa/data/faces/TFD/'
 
     experiment(args, None)

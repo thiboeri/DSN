@@ -44,21 +44,73 @@ def load_mnist(path):
     data = cPickle.load(open(os.path.join(path,'mnist.pkl'), 'r'))
     return data
 
+def load_tfd(path):
+    '''
+    import scipy.io as io
+    data = io.loadmat(os.path.join(path, 'TFD_48x48.mat'))
+    X = cast32(data['images'])/cast32(255)
+    X = X.reshape((X.shape[0], X.shape[1] * X.shape[2]))
+    labels  = data['labs_ex'].flatten()
+    labeled = labels != -1
+    unlabeled   =   labels == -1  
+    train_X =   X[unlabeled]
+    valid_X =   X[unlabeled][:100] # Stuf
+    test_X  =   X[labeled]
+    del data
+    '''
+
+    import pylearn.io.filetensor as io
+    F   =   open(os.join.path(path, 'TFD_48x48.ft'), 'r')
+    train_X =  ft.read(F)
+    train_Y =  ft.read(F)
+    valid_X =  ft.read(F)
+    valid_Y =  ft.read(F)
+    test_X  =  ft.read(F)
+    test_Y  =  ft.read(F)
+    
+    return (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y)
+
+    #return (train_X, labels[unlabeled]), (valid_X, labels[unlabeled][:100]), (test_X, labels[labeled])
+
+
 def experiment(state, channel):
     print 'LOADING MODEL CONFIG'
     config_path =   '/'+os.path.join(*state.model_path.split('/'))
+    print state.model_path
 
     if 'config' in os.listdir(config_path):
+        
         config_file = open(os.path.join(config_path, 'config'), 'r')
         config      =   config_file.readlines()
-        config_vals =   config[0].split('(')[1:][0].split(')')[:-1][0].split(', ')
-
+        try:
+            config_vals =   config[0].split('(')[1:][0].split(')')[:-1][0].split(', ')
+        except:
+            config_vals =   config[0][3:-1].replace(': ','=').replace("'","").split(', ')
+            config_vals =   filter(lambda x:not 'jobman' in x and not '/' in x and not ':' in x and not 'experiment' in x, config_vals)
+        
         for CV in config_vals:
-            exec('state.'+CV) in globals(), locals()
+            print CV
+            try:
+                exec('state.'+CV) in globals(), locals()
+            except:
+                exec('state.'+CV.split('=')[0]+"='"+CV.split('=')[1]+"'") in globals(), locals()
+    else:
+        import pdb; pdb.set_trace()
 
-    (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
-    train_X = numpy.concatenate((train_X, valid_X))
+    # LOAD DATA
+    if 'mnist' in state.data_path:
+        (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
+        train_X = numpy.concatenate((train_X, valid_X))
+    elif 'TFD' in state.data_path:
+        (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_tfd(state.data_path)
+    
+    N_input =   train_X.shape[1]
+    root_N_input = numpy.sqrt(N_input)
 
+
+    #train_X = binarize(train_X)
+    #valid_X = binarize(valid_X)
+    #test_X = binarize(test_X)
     numpy.random.seed(1)
     numpy.random.shuffle(train_X)
     train_X = theano.shared(train_X)
@@ -74,7 +126,7 @@ def experiment(state, channel):
     # SPECS
     K               =   state.K
     N               =   state.N
-    layer_sizes     =   [784] + [state.hidden_size] * K
+    layer_sizes     =   [N_input] + [state.hidden_size] * K
     learning_rate   =   theano.shared(cast32(state.learning_rate))
     annealing       =   cast32(state.annealing)
     momentum        =   theano.shared(cast32(state.momentum))
@@ -336,7 +388,8 @@ def experiment(state, channel):
     def sample_some_numbers(n_digits = 400):
         to_sample = time.time()
         # The network's initial state
-        init_vis    =   test_X.get_value()[:1]
+        #init_vis    =   test_X.get_value()[:1]
+        init_vis    =   test_X[:1]
 
         noisy_init_vis  =   f_noise(init_vis)
 
@@ -364,7 +417,7 @@ def experiment(state, channel):
     
     def plot_samples(epoch_number):
         V, H0 = sample_some_numbers()
-        img_samples =   PIL.Image.fromarray(tile_raster_images(V, (28,28), (20,20)))
+        img_samples =   PIL.Image.fromarray(tile_raster_images(V, (root_N_input,root_N_input), (20,20)))
         
         fname       =   'samples_epoch_'+str(epoch_number)+'.png'
         img_samples.save(fname) 
@@ -380,7 +433,7 @@ def experiment(state, channel):
 
 
     def plot_one_digit(digit):
-        plot_one    =   PIL.Image.fromarray(tile_raster_images(digit, (28,28), (1,1)))
+        plot_one    =   PIL.Image.fromarray(tile_raster_images(digit, (root_N_input,root_N_input), (1,1)))
         fname       =   'one_digit.png'
         plot_one.save(fname)
         os.system('eog one_digit.png')
@@ -395,8 +448,8 @@ def experiment(state, channel):
         #noisy_init_vis  =   cast32(numpy.random.uniform(size=init_vis.shape))
 
         # INDEXES FOR VISIBLE AND NOISY PART
-        noise_idx = (numpy.arange(784) % 28 < 14)
-        fixed_idx = (numpy.arange(784) % 28 > 14)
+        noise_idx = (numpy.arange(N_input) % root_N_input < (root_N_input/2))
+        fixed_idx = (numpy.arange(N_input) % root_N_input > (root_N_input/2))
         # function to re-init the visible to the same noise
 
         # FUNCTION TO RESET HALF VISIBLE TO DIGIT
@@ -435,31 +488,44 @@ def experiment(state, channel):
  
 
     #V_inpaint, H_inpaint = inpainting(test_X.get_value()[:1])
-    #plot_one    =   PIL.Image.fromarray(tile_raster_images(V_inpaint, (28,28), (1,50)))
+    #plot_one    =   PIL.Image.fromarray(tile_raster_images(V_inpaint, (root_N_input,root_N_input), (1,50)))
     #fname       =   'test.png'
     #plot_one.save(fname)
     #os.system('eog test.png')
                                    
    
-    #get all digits
-    digit_idx = [(test_Y==i).argmax() for i in range(10)]
-    inpaint_list = []
+    #get all digits, and do it a couple of times
+    test_X  =   test_X.get_value()
+    #test_Y  =   test_Y.get_value()
 
-    for idx in digit_idx:
-        DIGIT = test_X.get_value()[idx:idx+1] 
-        V_inpaint, H_inpaint = inpainting(DIGIT)
-        inpaint_list.append(V_inpaint)
+    numpy.random.seed(1)
+    test_idx    =   numpy.arange(len(test_Y))
 
-    INPAINTING  =   numpy.vstack(inpaint_list)
 
-    plot_inpainting =   PIL.Image.fromarray(tile_raster_images(INPAINTING, (28,28), (10,50)))
+    for Iter in range(10):
 
-    fname   =   'inpainting.png'
+        numpy.random.shuffle(test_idx)
+        test_X = test_X[test_idx]
+        test_Y = test_Y[test_idx]
+    
+        digit_idx = [(test_Y==i).argmax() for i in range(10)]
+        inpaint_list = []
 
-    plot_inpainting.save(fname)
+        for idx in digit_idx:
+            DIGIT = test_X[idx:idx+1] 
+            V_inpaint, H_inpaint = inpainting(DIGIT)
+            inpaint_list.append(V_inpaint)
 
-    if False and __name__ ==  "__main__":
-        os.system('eog inpainting.png')
+        INPAINTING  =   numpy.vstack(inpaint_list)
+
+        plot_inpainting =   PIL.Image.fromarray(tile_raster_images(INPAINTING, (root_N_input,root_N_input), (10,50)))
+
+        fname   =   'inpainting_'+str(Iter)+'.png'
+
+        plot_inpainting.save(fname)
+
+        if False and __name__ ==  "__main__":
+            os.system('eog inpainting.png')
 
 
 
@@ -467,21 +533,24 @@ def experiment(state, channel):
     # Generating 10000 samples
     samples, _ = sample_some_numbers(n_digits=10000) 
     
-    Mean, Std   =   main(state.sigma_parzen, samples, test_X.get_value())
+    Mean, Std   =   main(state.sigma_parzen, samples, test_X)
 
     #plot_samples(999)
     #sample_numbers(counter, [])
 
     if __name__ == '__main__':
-        
-        import ipdb; ipdb.set_trace()
+        return Mean, Std
+        #import ipdb; ipdb.set_trace()
     
     return channel.COMPLETE
 
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
+    parser.add_argument('--path', type=str, default='.')
     args = parser.parse_args()
+       
+   
     
     args.K          =   2
     args.N          =   1
@@ -511,22 +580,44 @@ if __name__ == '__main__':
     args.autoregression =   False
 
     args.data_path      =   '/data/lisa/data/mnist/'
+    #args.data_path      =   '/data/lisa/data/faces/TFD'
 
-    args.model_path     =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/3layer_1500tanh_prepostadd2_SP0.4/'
+    #args.model_path     =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/3layer_1500tanh_prepostadd2_SP0.4/'
 
     #models_to_evaluate  =   '/data/lisa/exp/thiboeri/repos/DSN/saved_models/'
-    models_to_evaluate  =   sys.argv[1]
+    models_to_evaluate  =   args.path
+    
+    print 'Evaluating models in path : ', models_to_evaluate
+    #subfolders  =   [o for o in os.listdir(models_to_evaluate) if os.path.isdir(o)]
 
-    models = filter(lambda x:numpy.any(['params' in P for P in os.listdir(os.path.join(models_to_evaluate, x))]), os.listdir(models_to_evaluate))
+
+    #models = filter(lambda x:numpy.any(['params' in P for P in os.listdir(os.path.join(models_to_evaluate, x))]), subfolders)
+    #models = filter(lambda x:numpy.any(['params' in P for P in os.listdir(os.path.join(models_to_evaluate, x))]), os.listdir(models_to_evaluate))
+
+    models = os.listdir(models_to_evaluate)
+    models = filter(lambda x:('jobman' in  x) or ('layer' in x), models)
+
+
+    print models
+    print
+    print 'Starting Loop'
+    print
+   
     
     for model in models:
-        args.model_path = os.path.join(models_to_evaluate, model)
-        print args.model_path
-        args.sigma_parzen   =   0.2
-        (M,S)   =   experiment(args, None)
-        fname   =   'parzen_ll'
-        f       =   open(os.path.join(models_to_evaluate, fname), 'w')
-        f.write(M)
-        f.write(S)
-        f.close()
-    experiment(args, None)
+        #try:
+            args.model_path = os.path.join(models_to_evaluate, model)
+            
+            print 'XXXX', args.model_path
+            args.sigma_parzen   =   0.2
+            (M,S)   =   experiment(args, None)
+            fname   =   'parzen_ll'
+            f       =   open(os.path.join(models_to_evaluate, fname), 'w')
+            f.write(str([M, S]))
+            f.close()
+        #except IOError:
+        #    import pdb; pdb.set_trace()
+        #except OSError:
+        #    print 'not a directory'
+    #experiment(args, None)
+
