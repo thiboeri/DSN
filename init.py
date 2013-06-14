@@ -60,10 +60,15 @@ def load_tfd(path):
 
 def experiment(state, channel):
     print state
+
+    # Save the current configuration
+    # Useful for logs/experiments
     f = open('config', 'w')
     f.write(str(state))
     f.close()
-    # LOAD DATA
+
+    # Load the data, train = train+valid, and shuffle train
+    # Targets are not used (will be misaligned after shuffling train
     if 'mnist' in state.data_path:
         (train_X, train_Y), (valid_X, valid_Y), (test_X, test_Y) = load_mnist(state.data_path)
         train_X = numpy.concatenate((train_X, valid_X))
@@ -72,40 +77,38 @@ def experiment(state, channel):
     
     N_input =   train_X.shape[1]
     root_N_input = numpy.sqrt(N_input)
-
-
-    #train_X = binarize(train_X)
-    #valid_X = binarize(valid_X)
-    #test_X = binarize(test_X)
-
     numpy.random.seed(1)
     numpy.random.shuffle(train_X)
     train_X = theano.shared(train_X)
     valid_X = theano.shared(valid_X)
     test_X  = theano.shared(test_X)
-    # shuffle Y also if necessary
 
-    # THEANO VARIABLES
+    # Theano variables and RNG
     X       = T.fmatrix()
     index   = T.lscalar()
     MRG = RNG_MRG.MRG_RandomStreams(1)
     
-    # SPECS
-    K               =   state.K
-    N               =   state.N
-    layer_sizes     =   [N_input] + [state.hidden_size] * K
-    learning_rate   =   theano.shared(cast32(state.learning_rate))
-    annealing       =   cast32(state.annealing)
-    momentum        =   theano.shared(cast32(state.momentum))
+    # Network and training specifications
+    K               =   state.K # N hidden layers
+    N               =   state.N # walkback = 2 * N * K
+    layer_sizes     =   [N_input] + [state.hidden_size] * K # layer sizes, from h0 to hK (h0 is the visible layer)
+    learning_rate   =   theano.shared(cast32(state.learning_rate))  # learning rate
+    annealing       =   cast32(state.annealing) # exponential annealing coefficient
+    momentum        =   theano.shared(cast32(state.momentum)) # momentum term
 
+    # THEANO VARIABLES
+    X       = T.fmatrix()   # Input of the graph
+    index   = T.lscalar()   # index to minibatch
+    MRG = RNG_MRG.MRG_RandomStreams(1)
+ 
 
-    # PARAMETERS
-    # weights
-
+    # PARAMETERS : weights list and bias list.
+    # initialize a list of weights and biases based on layer_sizes
     weights_list    =   [get_shared_weights(layer_sizes[i], layer_sizes[i+1], numpy.sqrt(6. / (layer_sizes[i] + layer_sizes[i+1] )), 'W') for i in range(K)]
     bias_list       =   [get_shared_bias(layer_sizes[i], 'b') for i in range(K + 1)]
 
-
+    # Load parameters from pickle if called with additional path argument
+    # Not very useful for now
     if __name__ == '__main__':
         if len(sys.argv) > 1:
             PARAMS  =   cPickle.load(open(sys.argv[1], 'r'))
@@ -113,20 +116,15 @@ def experiment(state, channel):
             [p.set_value(lp.get_value(borrow=False)) for lp, p in zip(PARAMS[weights_list:], bias_list)]
 
 
-    # This guy has to be lower diagonal!
-    # Proper init?
-    #V               =   get_shared_weights(layer_sizes[0], layer_sizes[0], 1e-5, 'V')
+    ''' Input autoregression : not properly implemented '''
     V               =   theano.shared(cast32(numpy.zeros((N_input,N_input))))
-   
-    
     # lower diagonal matrix with 1's under the main diagonal, will be used for masking
     # Upper diagonal actually, because of parametrisation : X * V -> X_i = 
-    
     dim = layer_sizes[0]
     lower_diag_I    =   cast32((numpy.tril(numpy.ones((dim, dim))).T + 1) % 2).T
     V.set_value(lower_diag_I * V.get_value())
 
-        # functions
+    # Util functions
     def dropout(IN, p = 0.5):
         noise   =   MRG.binomial(p = p, n = 1, size = IN.shape, dtype='float32')
         OUT     =   (IN * noise) / cast32(p)
@@ -156,6 +154,8 @@ def experiment(state, channel):
         c = T.eq(a,0) * b
         return IN * a + c
 
+    # Odd layer update function
+    # just a loop over the odd layers
     def update_odd_layers(hiddens, noisy):
         for i in range(1, K+1, 2):
             print i
@@ -164,7 +164,8 @@ def experiment(state, channel):
             else:
                 simple_update_layer(hiddens, None, i, mul_noise = False, add_noise = False)
 
-    # we can append the reconstruction at each step
+    # Even layer update
+    # p_X_chain is given to append the p(X|...) at each update (one update = odd update + even update)
     def update_even_layers(hiddens, p_X_chain, autoregression, noisy):
         for i in range(0, K+1, 2):
             print i
@@ -173,23 +174,29 @@ def experiment(state, channel):
             else:
                 simple_update_layer(hiddens, p_X_chain, i, autoregression, mul_noise = False, add_noise = False)
 
+    # The layer update function
+    # hiddens   :   list containing the symbolic theano variables [visible, hidden1, hidden2, ...]
+    #               layer_update will modify this list inplace
+    # p_X_chain :   list containing the successive p(X|...) at each update
+    #               update_layer will append to this list
+    # autoregression :  input autoregression (simple NADE)
+    #                   NOT PROPERLY IMPLEMENTED!!!
+    # mul_noise     : turn dropout on or off
+    # add_noise     : pre and post activation gaussian noise
+
     def simple_update_layer(hiddens, p_X_chain, i, autoregression=False, mul_noise=True, add_noise=True):
         # Compute the dot product, whatever layer
         post_act_noise  =   0
+
         if i == 0:
             hiddens[i]  =   T.dot(hiddens[i+1], weights_list[i].T) + bias_list[i]           
-            
             if autoregression:
                 print 'First layer auto-regressor'
                 hiddens[i] = hiddens[i] + T.dot(X, V)
 
         elif i == K:
             hiddens[i]  =   T.dot(hiddens[i-1], weights_list[i-1]) + bias_list[i]
-            # TODO compute d h_i / d h_(i-1)
-
-            # derivee de h[i] par rapport a h[i-1]
-            # W is what transpose...
-
+            
             if state.scaled_noise:
             
                 # to remove this, remove the post_act_noise variable initialisation and the following block
@@ -212,7 +219,6 @@ def experiment(state, channel):
 
                 #hiddens[i]      +=  pre_act_noise
 
-
         else:
             # next layer        :   layers[i+1], assigned weights : W_i
             # previous layer    :   layers[i-1], assigned weights : W_(i-1)
@@ -223,14 +229,10 @@ def experiment(state, channel):
             print '>>NO noise in first layer'
             add_noise   =   False
 
-
         # pre activation noise            
         if i != 0 and add_noise and not state.scaled_noise:
             print 'Adding pre-activation gaussian noise'
             hiddens[i]  =   add_gaussian_noise(hiddens[i], state.hidden_add_noise_sigma)
-      
-      
-      
        
         # ACTIVATION!
         if i == 0:
@@ -387,7 +389,7 @@ def experiment(state, channel):
 
 
     ##################################
-    # Sampling, round 2 motherf***** #
+    # Sampling,                      #
     ##################################
     
     # the input to the sampling function
@@ -646,22 +648,23 @@ def experiment(state, channel):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
+    # Add options here
     args = parser.parse_args()
     
-    args.K          =   2
+    args.K          =   1
     args.N          =   1
     args.n_epoch    =   1000
     args.batch_size =   100
 
     #args.hidden_add_noise_sigma =   1e-10
     args.scaled_noise           =   False
-    args.hidden_add_noise_sigma =   1
+    args.hidden_add_noise_sigma =   2
     args.hidden_dropout         =   0
-    args.input_salt_and_pepper  =   0.2
+    args.input_salt_and_pepper  =   0.1
 
-    args.learning_rate  =   0.25
+    args.learning_rate  =   4.
     args.momentum       =   0.5
-    args.annealing      =   0.995
+    args.annealing      =   0.999
 
     args.hidden_size    =   2000
 
